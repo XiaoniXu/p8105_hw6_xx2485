@@ -8,6 +8,11 @@ output: github_document
 ```{r, message = FALSE}
 library(tidyverse)
 library(ggplot2)
+library(dplyr)
+library(modelr)
+library(purrr)
+library(tidyr)
+library(forcats)
 
 set.seed(1)
 ```
@@ -121,67 +126,306 @@ Loading the homicide data
 hmc <- read_csv("data/homicide-data.csv")
 ```
 
-Create a city_state variable (e.g. “Baltimore, MD”), and a binary variable indicating whether the homicide is solved. Omit cities Dallas, TX; Phoenix, AZ; and Kansas City, MO – these don’t report victim race. Also omit Tulsa, AL – this is a data entry mistake. 
-
-
-
-For this problem, limit your analysis those for whom victim_race is white or black. Be sure that victim_age is numeric.
+Create a `city_state` variable, and a binary variable indicating whether the homicide is solved. Limit our analysis only for whom `victim_race` is `white` or `black`. Ensure that `victim_age` is numeric.
 
 ```{r}
-
+hmc_cleaned <- hmc %>%
+  # Create `city_state` variable
+  mutate(city_state = paste(city, state, sep = ", "),
+         # Create binary `solved` variable (1 if solved, 0 if not)
+         solved = if_else(grepl("Closed", disposition), 1, 0)) %>%
+  # Omit cities as specified
+  filter(
+    !(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"))
+  ) %>%
+  # Filter for `victim_race` as "White" or "Black"
+  filter(victim_race %in% c("White", "Black")) %>%
+  # Remove rows with `victim_age` as "Unknown"
+  filter(victim_age != "Unknown") %>%
+  # Ensure `victim_age` is numeric
+  mutate(victim_age = as.numeric(victim_age))
 ```
 
 
-For the city of Baltimore, MD, use the glm function to fit a logistic regression with resolved vs unresolved as the outcome and victim age, sex and race as predictors. Save the output of glm as an R object; apply the broom::tidy to this object; and obtain the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
+
+For the city of Baltimore, MD, use the `glm` function to fit a logistic regression with resolved vs unresolved as the outcome and victim age, sex and race as predictors. Obtain the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
 
 ```{r}
+# Load and preprocess the Baltimore data
+baltimore_df <- read_csv("data/homicide-data.csv") |> 
+  filter(city == "Baltimore") |> 
+  mutate(
+    resolved = as.numeric(disposition == "Closed by arrest"), 
+    victim_age = as.numeric(victim_age),                     
+    victim_race = fct_relevel(victim_race, "White")         
+  ) |> 
+  select(resolved, victim_age, victim_race, victim_sex)
 
+# Fit the logistic regression model
+fit_logistic <- baltimore_df |> 
+  glm(resolved ~ victim_age + victim_race + victim_sex, data = _, family = binomial())
+# Save the output of `glm` as an R object
+
+# Tidy the model output and compute adjusted odds ratios (ORs)
+tidy_results <- fit_logistic |> 
+  broom::tidy(conf.int = TRUE, exponentiate = TRUE) |> # apply the `broom::tidy` to this object
+  select(term, log_OR = estimate, OR = estimate, conf.low, conf.high, p.value) |> 
+  knitr::kable(digits = 3)
+
+# Display the tidy table
+tidy_results
+
+```
+Obtaining the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
+```{r}
+# Fit logistic regression model
+fit_logistic <- glm(resolved ~ victim_age + victim_race + victim_sex, 
+                    data = baltimore_df, family = binomial())
+
+# Use broom::tidy to summarize the model and compute odds ratios
+tidy_results <- broom::tidy(fit_logistic, conf.int = TRUE, exponentiate = TRUE)
+
+# Extract the results for "victim_sexMale"
+tidy_results |> 
+  filter(term == "victim_sexMale") |> 
+  select(term, estimate = estimate, conf.low, conf.high, p.value)
 ```
 
 
-Now run glm for each of the cities in your dataset, and extract the adjusted odds ratio (and CI) for solving homicides comparing male victims to female victims. Do this within a “tidy” pipeline, making use of purrr::map, list columns, and unnest as necessary to create a dataframe with estimated ORs and CIs for each city.
-```{r}
+Run `glm` for each of the cities in the dataset, and extract the adjusted odds ratio (and CI) for solving homicides comparing male victims to female victims. 
 
+
+```{r}
+# Logistic regression by city using hmc_cleaned
+city_results <- hmc_cleaned %>%
+  group_by(city_state) %>% # Group by city_state
+  nest() %>%              # Nest data for each city_state
+  mutate(
+    # fit logistic regression for each city
+    model = purrr::map(data, ~ glm(solved ~ victim_age + victim_race + victim_sex, 
+                                   data = ., family = binomial())),
+    tidy_results = purrr::map(model, ~ broom::tidy(.x, conf.int = TRUE, exponentiate = TRUE))
+  ) %>%
+  tidyr::unnest(tidy_results) %>% 
+  # compare male to female victims
+  filter(term == "victim_sexMale") %>%
+  select(city_state, estimate, conf.low, conf.high, p.value) # Select relevant columns
+
+# View the results
+city_results
 ```
 
-Create a plot that shows the estimated ORs and CIs for each city. Organize cities according to estimated OR, and comment on the plot.
+Create a plot that shows the estimated ORs and CIs for each city.
 ```{r}
-
+ggplot(city_results, aes(x = reorder(city_state, estimate), y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.6, size = 0.7, color = "#95adba") + 
+  geom_point(size = 2.5, color = "#007bbb") + 
+  coord_flip() +
+  labs(
+    title = "Adjusted Odds Ratios for Solving Homicides by City",
+    x = "City",
+    y = "Adjusted Odds Ratio (Male vs Female)"
+  ) +
+  theme_minimal()
 ```
 
+Comments:
+
+- Most cities have an OR below 1, indicating that homicides involving male victims are generally less likely to be solved compared to female victims.
+
+- Some cities, such as New York, NY (OR = 0.161) and Cincinnati, OH (OR = 0.206), show very low ORs, showing a strong disparity in case resolution rates.
+
+- Cities such as Fresno, CA (OR = 1.129) and Minneapolis, MN (OR = 1.075) have ORs above 1, implying that male victim cases are slightly more likely to be resolved in these cities.
+
+- Cities like New York, NY and Philadelphia, PA have narrow confidence intervals, showing that the estimates are more reliable or the data sizes are bigger.
+
+- Cities such as Stockton, CA (p = 0.89) and Minneapolis, MN (p = 0.84) have very high p-values (> 0.05), indicating that the observed differences are not statistically meaningful.
 
 ## Problem 3
 
 Loading birthweight data; clean the data for regression analysis (i.e. convert numeric to factor where appropriate, check for missing data, etc.).
 
 ```{r}
+bwt <- read_csv("data/birthweight.csv")
 
+bwt_cleaned <- bwt %>%
+  # Convert variables to factors where appropriate
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("Male", "Female")),
+    frace = factor(frace, levels = c(1, 2, 3, 4, 8, 9), labels = c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
+    mrace = factor(mrace, levels = c(1, 2, 3, 4, 8), labels = c("White", "Black", "Asian", "Puerto Rican", "Other")),
+    malform = factor(malform, levels = c(0, 1), labels = c("Absent", "Present")),
+    parity = factor(parity), 
+    pnumlbw = as.numeric(pnumlbw), 
+    pnumsga = as.numeric(pnumsga),  
+    smoken = as.numeric(smoken)  
+  ) %>%
+  filter(
+    !is.na(bwt),                  
+    !frace %in% "Unknown"         # Remove rows with father's race "Unknown"
+  ) %>%
+  # Select relevant columns and ensure continuous variables are in proper format
+  mutate(
+    bhead = as.numeric(bhead),     # Ensure numeric for baby's head circumference
+    blength = as.numeric(blength), # Ensure numeric for baby's length
+    bwt = as.numeric(bwt),         # Ensure numeric for baby's weight
+    delwt = as.numeric(delwt),     # Ensure numeric for mother's delivery weight
+    fincome = as.numeric(fincome), # Ensure numeric for family income
+    gaweeks = as.numeric(gaweeks), # Ensure numeric for gestational weeks
+    menarche = as.numeric(menarche), # Ensure numeric for mother's age at menarche
+    mheight = as.numeric(mheight),   # Ensure numeric for mother's height
+    momage = as.numeric(momage),     # Ensure numeric for mother's age
+    ppbmi = as.numeric(ppbmi),       # Ensure numeric for pre-pregnancy BMI
+    ppwt = as.numeric(ppwt),         # Ensure numeric for pre-pregnancy weight
+    wtgain = as.numeric(wtgain)      # Ensure numeric for weight gain
+  ) 
 ```
 
 
-Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and 
+Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two.  
 
 ```{r}
+# Fit the regression model with ppwt and delwt
+ppwt_delwt_model <- lm(bwt ~ ppwt + delwt, data = bwt_cleaned)
 
+# Summarize the model
+summary(ppwt_delwt_model)
 ```
 
 
-show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
+Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
 
 ```{r}
+bwt_with_residuals <- bwt_cleaned %>%
+  add_predictions(ppwt_delwt_model, var = "fitted") %>% # Add fitted values
+  add_residuals(ppwt_delwt_model, var = "residuals")   # Add residuals
 
+# Plot residuals against fitted values
+ggplot(bwt_with_residuals, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.6) + # Scatter plot of residuals
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") + 
+  labs(
+    title = "Residuals vs Fitted Values for ppwt and delwt Model",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
 ```
 
+The predictors include maternal characteristics of the following:
 
-Compare your model to two others:
+  - Pre-pregnancy weight (`ppwt`)
+  
+  - Mother’s weight at delivery (`delwt`)
+  
 
-One using length at birth and gestational age as predictors (main effects only)
-One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+I am curious about the relationship between weight of the mother and the birthweight of the baby, so only weight-related variables `ppwt` and `delwt` are chosen for the linear regression model.
 
-Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
+
+
+Comparing my model to two others:
+
+- One using length at birth and gestational age as predictors (main effects only);
+
+- One using head circumference, length, sex, and all interactions (including the three-way interaction) between these.
+
+Make this comparison in terms of the cross-validated prediction error.
+
+Define the models
 ```{r}
+model_ppwt_delwt <- lm(bwt ~ ppwt + delwt, data = bwt_cleaned)
+
+model_blength_gaweeks <- lm(bwt ~ blength + gaweeks, data = bwt_cleaned)
+
+model_full_interaction <- lm(bwt ~ bhead * blength * babysex, data = bwt_cleaned)
+```
+
+Visualize the goodness of fit for the three models using `gather_predictions`
+```{r}
+# Combine predictions for all three models
+bwt_cleaned_with_predictions <- bwt_cleaned %>%
+  gather_predictions(model_ppwt_delwt, model_blength_gaweeks, model_full_interaction) %>%
+  mutate(model = fct_inorder(model)) # Ensure correct order of models
+
+# Plot goodness of fit
+ggplot(bwt_cleaned_with_predictions, aes(x = ppwt, y = bwt)) + # Adjust x-axis depending on model
+  geom_point(alpha = 0.5) + # Observed data points
+  geom_line(aes(y = pred), color = "#007bbb") + # Predicted values
+  facet_grid(~model) + # Separate by model
+  labs(
+    title = "Goodness of Fit for Birthweight Models",
+    x = "Predictor (depends on model)",
+    y = "Birthweight"
+  ) +
+  theme_minimal()
 
 ```
 
+Perform cross-validation and calculate RMSEs
 
+```{r}
+# Perform Monte Carlo cross-validation
+cv_df <- crossv_mc(bwt_cleaned, 100) %>%
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+# Fit models on training data and calculate RMSEs for testing data
+cv_df <- cv_df %>%
+  mutate(
+    ppwt_delwt_mod = map(train, \(df) lm(bwt ~ ppwt + delwt, data = df)),
+    blength_gaweeks_mod = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
+    full_interaction_mod = map(train, \(df) lm(bwt ~ bhead * blength * babysex, data = df))
+  ) %>%
+  mutate(
+    rmse_ppwt_delwt = map2_dbl(ppwt_delwt_mod, test, \(mod, df) {
+      predictions <- predict(mod, newdata = df)
+      sqrt(mean((df$bwt - predictions)^2))
+    }),
+    rmse_blength_gaweeks = map2_dbl(blength_gaweeks_mod, test, \(mod, df) {
+      predictions <- predict(mod, newdata = df)
+      sqrt(mean((df$bwt - predictions)^2))
+    }),
+    rmse_full_interaction = map2_dbl(full_interaction_mod, test, \(mod, df) {
+      predictions <- predict(mod, newdata = df)
+      sqrt(mean((df$bwt - predictions)^2))
+    })
+  )
+
+# Summarize average RMSE for each model
+cv_summary <- cv_df %>%
+  summarize(
+    mean_rmse_ppwt_delwt = mean(rmse_ppwt_delwt),
+    mean_rmse_blength_gaweeks = mean(rmse_blength_gaweeks),
+    mean_rmse_full_interaction = mean(rmse_full_interaction)
+  )
+
+cv_summary
+```
+
+
+Plot prediction error distribution
+```{r}
+# Reshape RMSE results into long format
+rmse_distribution <- cv_df %>%
+  select(starts_with("rmse")) %>%
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>%
+  mutate(model = fct_inorder(model)) # Ensure correct order of models
+
+# Plot RMSE distribution
+ggplot(rmse_distribution, aes(x = model, y = rmse)) +
+  geom_violin(fill = "#007bbb", alpha = 0.7) + 
+  labs(
+    title = "Prediction Error Distribution for Candidate Models",
+    x = "Model",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+```
 
