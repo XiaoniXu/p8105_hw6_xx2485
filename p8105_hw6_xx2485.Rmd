@@ -4,13 +4,18 @@ author: "Xiaoni Xu"
 date: "2024-11-25"
 output: github_document
 ---
-loading needed packages
+
 ```{r, message = FALSE}
 library(tidyverse)
+library(ggplot2)
+
+set.seed(1)
 ```
 
 
 ## Problem 1
+
+Loading the weather data.
 ```{r}
 weather_df = 
   rnoaa::meteo_pull_monitors(
@@ -25,26 +30,87 @@ weather_df =
   select(name, id, everything())
 ```
 
-Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities, r-hat squared and log(beta_0 hat * beta_1 hat)
+Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities, \( \hat{R}^2 \) and \( \log(\hat{\beta}_0 \hat{\beta}_1) \)
 
 ```{r}
+# Bootstrap function using broom:: functions
+bootstrap_regression <- function(data, n_bootstrap = 5000) {
+  n <- nrow(data)
+  
+  # Initialize vectors to store results
+  r_squared <- numeric(n_bootstrap)
+  log_beta_product <- numeric(n_bootstrap)
+  
+  for (i in 1:n_bootstrap) {
+    bootstrap_sample <- data[sample(1:n, n, replace = TRUE), ]
+    
+    lm_fit <- lm(tmax ~ tmin, data = bootstrap_sample)
+    
+    r_squared[i] <- broom::glance(lm_fit)$r.squared
+    
+    # Extract coefficients using broom::tidy() and compute log(beta_0 * beta_1)
+    coef_values <- broom::tidy(lm_fit) %>%
+      filter(term %in% c("(Intercept)", "tmin")) %>%
+      pull(estimate)
+    
+    beta_0 <- coef_values[1]
+    beta_1 <- coef_values[2]
+    log_beta_product[i] <- log(abs(beta_0 * beta_1)) # Use abs() to avoid log of negatives
+  }
+  
+  # Return a data frame with the results
+  tibble(
+    r_squared = r_squared,
+    log_beta_product = log_beta_product
+  )
+}
 
+bootstrap_results <- bootstrap_regression(weather_df)
+
+summary(bootstrap_results)
 ```
 
 
 Plot the distribution of your estimates, and describe these in words.
  
 ```{r}
+# Visualize the distribution of R-hat squared
+ggplot(bootstrap_results, aes(x = r_squared)) +
+  geom_histogram(bins = 30, fill = "#007bbb", alpha = 0.7) +
+  labs(
+    title = "Distribution of R-hat Squared (\u005cR^2)",
+    x = expression(hat(R)^2),
+    y = "Frequency"
+  ) +
+  theme_minimal()
 
+# Visualize the distribution of log(beta_0 * beta_1)
+ggplot(bootstrap_results, aes(x = log_beta_product)) +
+  geom_histogram(bins = 30, fill = "#79ba00", alpha = 0.7) +
+  labs(
+    title = "Distribution of log(beta_0 hat * beta_1 hat)",
+    x = expression(log(hat(beta)[0] * hat(beta)[1])),
+    y = "Frequency"
+  ) +
+  theme_minimal()
 ```
  
- 
-Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for both quantities
+The distribution of \( \hat{R}^2 \) is unimodal and follows an approximate normal distribution, with most values clustering around the average \( R^2 \) = 0.9114 of the linear regression model.
 
-Notes: broom::glance() is helpful for extracting r^2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β^0∗β^1).
- 
+The distribution of \( \log(\hat{\beta}_0 \hat{\beta}_1) \) is unimodal and follows an approximate normal distribution, with most values clustering around the average \( \log(\hat{\beta}_0 \hat{\beta}_1) \) = 2.013 of the linear regression model.
+
+
+
+Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for both quantities.
+
 ```{r}
+ci_r_squared <- quantile(bootstrap_results$r_squared, c(0.025, 0.975))
+ci_log_beta_product <- quantile(bootstrap_results$log_beta_product, c(0.025, 0.975))
 
+list(
+  r_squared_ci = ci_r_squared,
+  log_beta_product_ci = ci_log_beta_product
+)
 ```
  
 
@@ -52,10 +118,12 @@ Notes: broom::glance() is helpful for extracting r^2 from a fitted regression, a
 
 Loading the homicide data
 ```{r}
-
+hmc <- read_csv("data/homicide-data.csv")
 ```
 
 Create a city_state variable (e.g. “Baltimore, MD”), and a binary variable indicating whether the homicide is solved. Omit cities Dallas, TX; Phoenix, AZ; and Kansas City, MO – these don’t report victim race. Also omit Tulsa, AL – this is a data entry mistake. 
+
+
 
 For this problem, limit your analysis those for whom victim_race is white or black. Be sure that victim_age is numeric.
 
