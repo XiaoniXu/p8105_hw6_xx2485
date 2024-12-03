@@ -176,6 +176,13 @@ tidy_results <- fit_logistic |>
 tidy_results
 
 ```
+- The adjusted odds ratio for `victim_sexMale` is 0.415, indicating that homicides involving male victims are significantly less likely to be resolved compared to female victims.
+
+- The adjusted odds ratio for `victim_raceBlack` is 0.431, indicating that homicides involving Black victims are significantly less likely to be resolved compared to victims of other races.
+
+- The adjusted odds ratio for `victim_age` is 0.993, indicating that age does not have a statistically significant effect on the likelihood of resolving homicide cases.
+
+
 Obtaining the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.
 ```{r}
 # Fit logistic regression model
